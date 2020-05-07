@@ -1,0 +1,140 @@
+version: '3.4'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:5.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 32181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka-ia-broker1:
+    image: confluentinc/cp-kafka:5.5.0
+    container_name: CoEInt.kafka-ia-broker1
+    hostname: CoEInt.kafka-ia-broker1
+    depends_on:
+      - zookeeper
+    volumes:
+      - ./gen-certificats/certificats:/etc/kafka/secrets
+    ports:
+    # "`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-
+    # An important note about accessing Kafka from clients on other machines: 
+    # -----------------------------------------------------------------------
+    #
+    # For connections _internal_ to the docker network, such as from other services
+    # and components, use SSL://CoEInt.kafka-ia-broker1:29092.
+    #
+    # See https://rmoff.net/2018/08/02/kafka-listeners-explained/ for details
+    # "`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-'"`-._,-
+    #
+      - "29092:29092"
+      - "39092:39092"
+    environment:
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: SSL:SSL,SSL_HOST:SSL
+      KAFKA_ADVERTISED_LISTENERS: SSL://CoEInt.kafka-ia-broker1:29092,SSL_HOST://localhost:39092
+      KAFKA_INTER_BROKER_LISTENER_NAME: SSL
+      KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_AUTHORIZER.CLASS.NAME: kafka.security.auth.SimpleAclAuthorizer
+      # By default, the SSL user name will be of the form CN=writeuser,OU=Unknown,O=Unknown,L=Unknown,ST=Unknown,C=Unknown. 
+      # Setting ssl.principal.mapping.rules to change the SSL user name (https://docs.confluent.io/current/kafka/authorization.html#user-names)
+      KAFKA_SSL_PRINCIPAL_MAPPING_RULES: RULE:^CN=(.*?),.*$$/$$1/
+      KAFKA_SUPER_USERS: User:CoEInt.kafka-ia-broker1;User:CoEInt.kafka-ia-producer;User:CoEInt.kafka-ia-consumer 
+      # There is no need to provide the path /etc/kafka/secrets in the file name since it is already pointing to this path
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka-ia-broker1.keystore.jks
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka-ia.truststore.jks
+      # The credentials needs to be provided by a file name
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: kafka-ia.truststore.cred
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka-ia-broker1.keystore.cred
+      KAFKA_SSL_KEY_CREDENTIALS: kafka-ia.key.cred
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: " "
+      KAFKA_TOOLS_LOG4J_LOGLEVEL: WARN   
+      KAFKA_LOG4J_LOGGERS: kafka.authorizer.logger=DEBUG
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:32181
+      # In development enviroment, auto-creating topics (and deleting them) could be convenient
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # -v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v-v
+      # Useful settings for development/laptop use - modify as needed for Prod
+      # This one makes ksqlDB feel a bit more responsive when queries start running
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 100
+      # Eight partitions is more than enough for development
+      KAFKA_NUM_PARTITIONS: 8
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:5.5.0
+    container_name: schema-registry
+    depends_on:
+      - zookeeper
+      - kafka-ia-broker1
+    volumes:
+      - ./gen-certificats/certificats:/etc/kafka/secrets
+    ports:
+      - 38081:8081
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: zookeeper:32181
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: SSL://CoEInt.kafka-ia-broker1:29092
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: SSL
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: " "
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka-ia.truststore.jks
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_PASSWORD: soleil1234
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka-ia-broker1.keystore.jks
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEYSTORE_PASSWORD: soleil1234
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEY_PASSWORD: soleil1234
+
+  akhq:
+    image: tchiotludo/akhq
+    volumes:
+      - ./gen-certificats/certificats:/etc/kafka/secrets
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            docker-kafka-server:
+              properties:
+                bootstrap.servers: "CoEInt.kafka-ia-broker1:29092"
+                security.protocol: SSL
+                ssl.truststore.location: /etc/kafka/secrets/kafka-ia.truststore.jks
+                ssl.truststore.password: soleil1234
+                ssl.keystore.location: /etc/kafka/secrets/kafka-ia-broker1.keystore.jks
+                ssl.keystore.password: soleil1234
+                ssl.key.password: soleil1234
+              schema-registry:
+                url: "http://schema-registry:8081"
+    ports:
+      - 8080:8080
+    depends_on:
+      - kafka-ia-broker1
+      - schema-registry
+
+  prometheus:
+    image: prom/prometheus:v2.12.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:6.4.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana:/var/lib/grafana
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter
+    volumes:
+      - ./grafana:/var/lib/grafana
+    command: --kafka.server=CoEInt.kafka-ia-broker1:29092 --tls.enabled --no-sasl.handshake --tls.ca-file=/etc/kafka/secrets/kafka-ia-ca.crt --tls.cert-file /etc/kafka/secrets/kafka-exporter-cert.pem --tls.key-file /etc/kafka/secrets/kafka-exporter-key.pem
+    volumes:
+      - ./gen-certificats/certificats:/etc/kafka/secrets
+    depends_on:
+      - kafka-ia-broker1
+    restart: on-failure
+    ports:
+      - "9308:9308"
+    
